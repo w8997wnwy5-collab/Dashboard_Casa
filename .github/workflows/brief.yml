@@ -1,0 +1,42 @@
+name: Brief di casa
+
+# Mattina verso le 06:10 e sera verso le 17:55 (ora di Lugano, estate e inverno).
+# GitHub usa l'ora UTC: partono due orari e lo script tiene solo quello giusto.
+on:
+  schedule:
+    - cron: "7 4,5 * * *"
+    - cron: "53 15,16 * * *"
+  workflow_dispatch:
+    inputs:
+      tipo:
+        description: "mattina o sera"
+        required: true
+        default: mattina
+        type: choice
+        options: [mattina, sera]
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+      - run: pip install -r scripts/requirements.txt
+      - name: Scrivi il brief
+        working-directory: scripts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python brief.py --tipo "${{ inputs.tipo }}" --forza
+          else
+            python brief.py
+          fi
