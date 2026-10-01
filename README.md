@@ -39,7 +39,9 @@ L’alimentatore da 20 W dell’iPad va bene.
 ## 2. GitHub (10 minuti)
 
 1. Nel repository **Dashboard_Casa**: *Add file › Upload files*, trascinate tutto il contenuto di questa cartella (compresa `.github`) e fate *Commit*.
-   Se il caricamento dal browser salta la cartella `.github`, createla a mano con *Add file › Create new file* scrivendo `.github/workflows/brief.yml` come nome e incollando il contenuto; lo stesso per `calendario.yml` e `mercati.yml`.
+   **Attenzione:** su Mac la cartella `.github` è nascosta (nel Finder la mostrate con **Cmd + Maiusc + .**) e senza di lei non parte nessuna automazione.
+   Controllate nella scheda **Actions**: a sinistra devono comparire *Calendario FamilyWall*, *Brief di casa* e *Mercati*.
+   Se non ci sono, createle a mano con *Add file › Create new file*: come nome scrivete `.github/workflows/calendario.yml` (le barre creano le cartelle), incollate il contenuto del file e fate *Commit*; lo stesso per `brief.yml` e `mercati.yml`.
 2. Aprite `config.js` (matita per modificare) e mettete URL e chiave **publishable**. Se lo lasciate vuoto, l’app ve li chiede al primo avvio.
 3. **Settings › Pages**: *Deploy from a branch*, ramo `main`, cartella `/ (root)`. Dopo un minuto la dashboard è su
    `https://w8997wnwy5-collab.github.io/Dashboard_Casa/`.
@@ -49,6 +51,7 @@ L’alimentatore da 20 W dell’iPad va bene.
    - `ANTHROPIC_API_KEY`: la chiave API di Claude ([console.anthropic.com](https://console.anthropic.com)), facoltativa: senza, il brief si scrive a regole
    - nella scheda *Variables* potete mettere `CLAUDE_MODEL` (predefinito `claude-sonnet-5-5`; `claude-haiku-4-5-20251001` costa la metà)
 5. **Actions**: abilitate i workflow e lanciate a mano *Mercati*, *Calendario FamilyWall* e *Brief di casa* (*Run workflow*) per vedere che funzionano.
+   Nel registro del calendario trovate l’elenco degli eventi letti da FamilyWall; nell’app, *Impostazioni › Automazioni su GitHub* vi dice com’è andata l’ultima volta.
 
 ## 3. Collegamenti, dall’app (5 minuti)
 
@@ -115,7 +118,11 @@ cambio dalla BCE via Frankfurter, Interroll da Yahoo Finance, calendario dal lin
 ## Se qualcosa non va
 
 - **«Questo account non fa ancora parte della casa»**: manca la riga in `casa_membri` (la schermata mostra quella da lanciare).
-- **Calendario vuoto**: controllate il link iCal e lanciate a mano il workflow *Calendario FamilyWall*; il registro mostra gli eventi letti.
+- **Calendario vuoto**: guardate *Impostazioni › Automazioni su GitHub* nell’app.
+  - *Non è ancora arrivato*: l’automazione non è mai partita. In GitHub › Actions lanciate *Calendario FamilyWall*; se non c’è, manca la cartella `.github` (vedi sopra).
+  - *Ultimo tentativo …: errore*: la frase dice cosa fare (di solito rigenerare il link iCal in FamilyWall e incollarlo di nuovo).
+  - Letto ma l’evento non c’è: nel registro di *Calendario FamilyWall* c’è l’elenco degli eventi letti. Se manca, l’evento è in un altro calendario di FamilyWall: il link iCal porta solo il calendario da cui l’avete generato (quello con il nome del cerchio). Il telefono mostra i prossimi 7 giorni.
+- **Errore rosso in Actions**: la riga *Dashboard Casa* in cima al riepilogo dice cosa sistemare (secret mancanti, chiave publishable al posto di quella secret, URL sbagliato).
 - **Traffico «da collegare»**: servono chiave TomTom e indirizzi con *Trova*.
 - **Brief «riassunto automatico»**: il workflow del brief non ha ancora girato oggi; la dashboard intanto ne scrive uno da sola.
 - **Automazioni ferme**: GitHub spegne i workflow pianificati dopo 60 giorni senza attività nel repository. Il workflow *Mercati* fa un commit ogni ora nei giorni feriali proprio per evitarlo; se succede, riattivateli dalla scheda *Actions*.

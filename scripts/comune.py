@@ -1,10 +1,14 @@
 """Dashboard Casa · funzioni comuni alle GitHub Action (Supabase, fuso orario, meteo, traffico)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import sys
+import traceback
 from datetime import date, datetime, timedelta
+from typing import Callable, NoReturn
 from zoneinfo import ZoneInfo
 
 import requests
@@ -21,15 +25,63 @@ def log(*parti) -> None:
     print("·", *parti, flush=True)
 
 
+def _annotazione(testo: str) -> str:
+    return str(testo).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def avviso(testo: str) -> None:
+    """Avviso giallo nel riepilogo della GitHub Action (l'automazione resta verde)."""
+    print(f"::warning title=Dashboard Casa::{_annotazione(testo)}", flush=True)
+
+
+def errore(testo: str) -> NoReturn:
+    """Errore rosso nel riepilogo della GitHub Action, con una frase che dice cosa fare."""
+    print(f"::error title=Dashboard Casa::{_annotazione(testo)}", flush=True)
+    sys.exit(f"ERRORE: {testo}")
+
+
+def esegui(principale: Callable[[], None]) -> None:
+    """Lancia lo script: un problema imprevisto diventa un errore leggibile invece di un traceback muto."""
+    try:
+        principale()
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        errore(str(e))
+
+
+def _ruolo_jwt(chiave: str) -> str:
+    try:
+        corpo = chiave.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(corpo + "=" * (-len(corpo) % 4))).get("role", "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Supabase (chiave segreta: solo nelle GitHub Action, mai nell'app)
 # ---------------------------------------------------------------------------
 class Supabase:
     def __init__(self, url: str | None = None, chiave: str | None = None):
-        self.url = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
-        self.chiave = chiave or os.environ.get("SUPABASE_SECRET_KEY", "")
-        if not self.url or not self.chiave:
-            sys.exit("Mancano i secret SUPABASE_URL e SUPABASE_SECRET_KEY (GitHub › Settings › Secrets and variables › Actions).")
+        url = (url or os.environ.get("SUPABASE_URL", "")).strip().strip("\"'")
+        chiave = (chiave or os.environ.get("SUPABASE_SECRET_KEY", "")).strip().strip("\"'")
+        if not url or not chiave:
+            errore("Mancano i secret SUPABASE_URL e SUPABASE_SECRET_KEY: GitHub › Settings › Secrets and variables › Actions › New repository secret.")
+        url = re.sub(r"/+$", "", url)
+        url = re.sub(r"/(rest|auth)/v1.*$", "", url)  # se è stato incollato l'indirizzo dell'API e non quello del progetto
+        pannello = re.search(r"supabase\.com/dashboard/project/([a-z0-9]{20})", url)
+        if pannello:  # incollato l'indirizzo del pannello di Supabase: basta il codice del progetto
+            url = pannello.group(1)
+        if re.fullmatch(r"[a-z0-9]{20}", url):  # incollato solo il codice del progetto
+            url = f"https://{url}.supabase.co"
+        if not url.startswith("https://"):
+            errore(f"SUPABASE_URL non sembra giusto («{url[:40]}»): deve essere l'indirizzo del progetto, tipo https://abcd1234.supabase.co")
+        if chiave.startswith("sb_publishable_"):
+            errore("In SUPABASE_SECRET_KEY c'è la chiave publishable: qui serve quella secret (sb_secret_…), da Supabase › Project Settings › API Keys.")
+        if chiave.startswith("eyJ") and _ruolo_jwt(chiave) == "anon":
+            errore("In SUPABASE_SECRET_KEY c'è la vecchia chiave anon: qui serve la service_role (oppure una sb_secret_…).")
+        self.url, self.chiave = url, chiave
 
     @property
     def _headers(self) -> dict:
@@ -39,29 +91,64 @@ class Supabase:
             h["Authorization"] = f"Bearer {self.chiave}"
         return h
 
+    @staticmethod
+    def _problema(cosa: str, r) -> RuntimeError:
+        if r.status_code == 401:
+            return RuntimeError(f"{cosa}: Supabase rifiuta la chiave (401). Controllate il secret SUPABASE_SECRET_KEY (deve essere la chiave secret di questo progetto).")
+        if r.status_code == 404:
+            return RuntimeError(f"{cosa}: non trovato (404). SUPABASE_URL è il progetto giusto? Avete lanciato supabase/schema.sql? {r.text[:200]}")
+        return RuntimeError(f"{cosa} ({r.status_code}): {r.text[:300]}")
+
     def leggi(self, tabella: str, **filtri) -> list:
         r = requests.get(f"{self.url}/rest/v1/{tabella}", headers=self._headers, params=filtri, timeout=TIMEOUT)
         if r.status_code >= 400:
-            raise RuntimeError(f"Lettura di {tabella} non riuscita ({r.status_code}): {r.text[:300]}")
+            raise self._problema(f"Lettura di {tabella} non riuscita", r)
         return r.json()
 
     def inserisci(self, tabella: str, righe) -> None:
         h = {**self._headers, "Prefer": "return=minimal"}
         r = requests.post(f"{self.url}/rest/v1/{tabella}", headers=h, data=json.dumps(righe), timeout=TIMEOUT)
         if r.status_code >= 400:
-            raise RuntimeError(f"Scrittura su {tabella} non riuscita ({r.status_code}): {r.text[:300]}")
+            raise self._problema(f"Scrittura su {tabella} non riuscita", r)
 
     def rpc(self, funzione: str, **parametri):
         r = requests.post(f"{self.url}/rest/v1/rpc/{funzione}", headers=self._headers, data=json.dumps(parametri), timeout=TIMEOUT)
         if r.status_code >= 400:
-            raise RuntimeError(f"Funzione {funzione} non riuscita ({r.status_code}): {r.text[:300]}")
+            raise self._problema(f"Funzione {funzione} non riuscita", r)
         return r.json() if r.text else None
 
     def config(self) -> tuple[dict, dict]:
         righe = self.leggi("casa_config", id="eq.1", select="dati,collegamenti")
         if not righe:
-            sys.exit("Nel database manca la configurazione: avete lanciato supabase/schema.sql?")
+            errore("Nel database manca la configurazione: avete lanciato supabase/schema.sql in questo progetto Supabase?")
         return righe[0].get("dati") or {}, righe[0].get("collegamenti") or {}
+
+    def segna_stato(self, nome: str, valore: dict) -> bool:
+        """Scrive com'è andata un'automazione in casa_config.collegamenti.automazioni: l'app lo mostra nelle impostazioni.
+
+        Scrive solo se nessuno ha toccato le impostazioni nel frattempo (controllo su aggiornato_il),
+        così non cancella mai una modifica fatta dall'app nello stesso istante. Non blocca mai l'automazione.
+        """
+        try:
+            for _ in range(3):
+                righe = self.leggi("casa_config", id="eq.1", select="collegamenti,aggiornato_il")
+                if not righe:
+                    return False
+                coll = dict(righe[0].get("collegamenti") or {})
+                auto = dict(coll.get("automazioni") or {})
+                auto[nome] = valore
+                coll["automazioni"] = auto
+                r = requests.patch(f"{self.url}/rest/v1/casa_config", headers={**self._headers, "Prefer": "return=representation"},
+                                   params={"id": "eq.1", "aggiornato_il": f"eq.{righe[0]['aggiornato_il']}", "select": "id"},
+                                   data=json.dumps({"collegamenti": coll}), timeout=TIMEOUT)
+                if r.status_code >= 400:
+                    raise self._problema("Stato non salvato", r)
+                if r.json():
+                    return True
+            log("stato non salvato: le impostazioni cambiavano proprio adesso, ci riprovo al prossimo giro")
+        except Exception as e:  # noqa: BLE001
+            log("stato non salvato:", e)
+        return False
 
 
 # ---------------------------------------------------------------------------

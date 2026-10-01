@@ -28,6 +28,9 @@
     const occupato = (d, p) => v.eventsOn(d).some(e => !e.allDay && (e.chi === p || e.chi === 'MG') && Math.min(e.e, 1320) - Math.max(e.s, 1140) >= 45);
     v.serateLibere = (da, n) => { const out = []; for (let i = 0; i < n; i++) { const d = C.addDays(da, i); if (!occupato(d, 'M') && !occupato(d, 'G')) out.push(d); } return out; };
 
+    /* automazioni su GitHub: com'è andata l'ultima volta (le Action lo scrivono in collegamenti.automazioni) */
+    v.auto = statoAutomazioni(v, D, E, coll, now);
+
     /* momento della giornata e colori */
     const nf_ = C.toMin(schermo.notte_dalle || '23:00'), nt = C.toMin(schermo.notte_alle || '06:15');
     const notte = nf_ > nt ? (min >= nf_ || min < nt) : (min >= nf_ && min < nt);
@@ -128,6 +131,43 @@
     v.mercati = E.mercati || null;
     return v;
   };
+
+  /* stato delle tre automazioni su GitHub, con una frase che dice cosa fare */
+  const quandoTesto = (d, oggi) => {
+    const z = C.zParts(d), diff = C.dayDiff(z.o, oggi);
+    return diff === 0 ? `alle ${hm(z.min)}` : diff === 1 ? `ieri alle ${hm(z.min)}` : `${C.shortDate(z.o)} alle ${hm(z.min)}`;
+  };
+  function statoAutomazioni(v, D, E, coll, now) {
+    const auto = coll.automazioni || {}, oggi = v.o, ore = d => (now - d) / 3600e3;
+    const data = x => { const d = x ? new Date(x) : null; return d && !isNaN(d) ? d : null; };
+    const riga = (stato, testo) => ({ stato, ok: stato === 'ok', testo });
+    if (v.esempio) return { calendario: riga('ok', 'Letto alle 10:30: 9 eventi nelle prossime tre settimane.'), brief: riga('ok', 'Ultimo stamattina alle 06:11, scritto da Claude.'), mercati: riga('ok', 'Aggiornati alle 09:23.'), avviso: '' };
+
+    const sc = auto.calendario, qc = data(sc && sc.quando);
+    let cal;
+    if (!coll.ical_url) cal = riga('nolink', 'Manca il link iCal di FamilyWall (sezione Calendario).');
+    else if (!qc) cal = riga('mai', 'Non è ancora arrivato. Lo copia ogni 15 minuti l’automazione «Calendario FamilyWall»: su GitHub aprite il repository › Actions › Calendario FamilyWall › Run workflow. Se in Actions non c’è, manca la cartella .github.');
+    else if (sc.ok === false) cal = riga('errore', `Ultimo tentativo ${quandoTesto(qc, oggi)}: ${sc.errore || 'errore sconosciuto'}.`);
+    else if (ore(qc) > 2) cal = riga('fermo', `Fermo dall’ultima lettura (${quandoTesto(qc, oggi)}): controllate GitHub › Actions › Calendario FamilyWall.`);
+    else cal = riga('ok', `Letto ${quandoTesto(qc, oggi)}: ${sc.eventi === 1 ? '1 evento' : `${sc.eventi || 0} eventi`} nelle prossime tre settimane.`);
+
+    const ub = (D.brief || [])[0], qb = data(ub && ub.creato_il), nota = auto.brief && auto.brief.nota;
+    let br;
+    if (!qb) br = riga('mai', 'Non ancora scritto: parte verso le 06:10 e le 17:55. Per provarlo subito: GitHub › Actions › Brief di casa › Run workflow.');
+    else if (ore(qb) > 26) br = riga('fermo', `Ultimo ${quandoTesto(qb, oggi)}: controllate GitHub › Actions › Brief di casa.`);
+    else if (ub.modello === 'regole' && nota && !/senza chiave/.test(nota)) br = riga('errore', `Ultimo ${quandoTesto(qb, oggi)}, scritto a regole perché ${nota}.`);
+    else br = riga('ok', `Ultimo ${quandoTesto(qb, oggi)}, ${ub.modello === 'regole' ? 'scritto a regole (senza Claude)' : 'scritto da Claude'}.`);
+
+    const qm = data(E.mercati && E.mercati.aggiornato);
+    let mk;
+    if (!qm) mk = riga('mai', 'Non ancora aggiornati: girano ogni ora nei giorni feriali (a mano: GitHub › Actions › Mercati › Run workflow).');
+    else if (ore(qm) > 80) mk = riga('fermo', `Ultimo aggiornamento ${quandoTesto(qm, oggi)}: controllate GitHub › Actions › Mercati.`);
+    else mk = riga('ok', `Aggiornati ${quandoTesto(qm, oggi)}.`);
+
+    const avviso = cal.stato === 'mai' ? 'calendario non ancora arrivato' : cal.stato === 'errore' ? 'il calendario non si legge' : cal.stato === 'fermo' ? 'calendario fermo'
+      : (br.stato === 'errore' || br.stato === 'fermo' || mk.stato === 'fermo') ? 'automazioni da controllare' : '';
+    return { calendario: cal, brief: br, mercati: mk, avviso };
+  }
 
   /* brief automatico quando manca quello scritto da Claude */
   function briefAuto(v, tipo, titolo) {
@@ -290,7 +330,7 @@
     const dopo = v.mode === 'sera' ? `<div class="dayhead">Nei prossimi giorni</div><div class="evlist">${[2, 3, 4, 5, 6].flatMap(i => v.eventsOn(C.addDays(v.o, i)).map(e => ({ e, d: C.addDays(v.o, i) }))).slice(0, 2).map(({ e, d }) => `<div class="ev${e.festa ? ' holiday' : ''}"><time>${C.WDS[C.weekday(d)]}</time><span class="t">${esc(e.titolo)}</span>${C.anelli(v, e.chi)}</div>`).join('')}</div>` : '';
     return `<section class="tile cal" style="grid-area:cal">
       <div class="eyebrow"><span>${head}</span><span class="meta">FamilyWall</span></div>
-      <div class="evlist">${list.length ? list.slice(0, 4).map(e => evRow(v, e, true)).join('') : `<div class="empty">${v.mode === 'sera' ? 'Serata libera' : 'Niente in programma'}</div>`}</div>
+      <div class="evlist">${list.length ? list.slice(0, 4).map(e => evRow(v, e, true)).join('') : `<div class="empty">${{ nolink: 'Calendario da collegare', mai: 'Calendario in arrivo', errore: 'Calendario da controllare' }[v.auto.calendario.stato] || (v.mode === 'sera' ? 'Serata libera' : 'Niente in programma')}</div>`}</div>
       <div class="dayhead">Domani, ${C.WD[C.weekday(t)]}</div>
       <div class="evlist">${tom.length ? tom.slice(0, tomMax).map(e => evRow(v, e, false)).join('') : '<div class="empty">Niente in programma</div>'}</div>
       ${dopo}
@@ -457,6 +497,13 @@
           ${f.completa ? '' : `<button type="button" class="btn sm primary" data-act="fatto" data-id="${esc(f.id)}" data-chi="${me || f.assegnata}">Fatto</button>`}</li>`;
       }).join('') || '<li>Nessuna faccenda: aggiungetele nelle impostazioni.</li>'}</ul></div>`;
   };
+  /* cosa dire quando il calendario è vuoto: vuoto davvero, o non ancora arrivato da FamilyWall? */
+  const calVuoto = (v, n) => {
+    const s = v.auto.calendario.stato;
+    if (s === 'nolink') return `<p class="p-hint">FamilyWall non è ancora collegato.</p><button type="button" class="linkbtn" data-act="impostazioni" data-sez="calendario">Collegalo nelle impostazioni</button>`;
+    if (s === 'mai' || s === 'errore' || s === 'fermo') return `<p class="p-hint">${s === 'mai' ? 'Il calendario di FamilyWall non è ancora arrivato.' : s === 'errore' ? 'Il calendario di FamilyWall non si riesce a leggere.' : 'Il calendario di FamilyWall non si aggiorna da un po’.'}</p><button type="button" class="linkbtn" data-act="impostazioni" data-sez="automazioni">Vedi cosa succede</button>`;
+    return n ? '' : '<p class="p-hint">Niente in calendario nei prossimi sette giorni.</p>';
+  };
   P.casa = (v, ui) => {
     const b = v.brief, other = io(v) === 'G' ? 'M' : 'G';
     const giorni = [0, 1, 2, 3, 4, 5, 6].map(i => ({ d: C.addDays(v.o, i), ev: v.eventsOn(C.addDays(v.o, i)) })).filter(x => x.ev.length);
@@ -469,7 +516,8 @@
         ${ok(ui, 'nota')}
       </form>
       <div class="p-card"><div class="p-label">Prossimi giorni</div>
-        ${giorni.length ? giorni.map(g => `<div class="p-day"><div class="dayhead">${C.shortDate(g.d)}</div>${g.ev.map(e => `<div class="ev${e.festa ? ' holiday' : ''}"><time>${e.allDay ? 'tutto' : e.start}</time><span class="t">${esc(e.titolo)}</span>${C.anelli(v, e.chi)}</div>`).join('')}</div>`).join('') : '<p class="p-hint">Niente in calendario nei prossimi sette giorni.</p>'}
+        ${giorni.length ? giorni.map(g => `<div class="p-day"><div class="dayhead">${C.shortDate(g.d)}</div>${g.ev.map(e => `<div class="ev${e.festa ? ' holiday' : ''}"><time>${e.allDay ? 'tutto' : e.start}</time><span class="t">${esc(e.titolo)}</span>${C.anelli(v, e.chi)}</div>`).join('')}</div>`).join('') : ''}
+        ${calVuoto(v, giorni.length)}
       </div>
       ${v.countdown.length ? `<div class="p-card"><div class="p-label">Countdown</div><ul class="p-list">${v.countdown.slice(0, 6).map(x => `<li><span class="grow">${esc(x.l)}</span><span class="amt">${x.n}${x.u === '°' ? '°' : x.u ? ' gg' : ''}</span></li>`).join('')}</ul></div>` : ''}
       <div class="p-card siri">${I('mic')}<div><b>Con Siri</b><br>«Ehi Siri, spesa di casa» e poi dite cosa manca. Il comando rapido si prepara in Impostazioni › Siri e telefono.</div></div>`;
@@ -500,6 +548,7 @@
       if (!c.tomtom_key) mancano.push(['traffico', 'chiave TomTom per il traffico']);
       if (!c.ical_url) mancano.push(['calendario', 'link del calendario FamilyWall']);
       if (!c.siri_token) mancano.push(['siri', 'codice per Siri']);
+      if (v.auto.avviso) mancano.push(['automazioni', v.auto.avviso]);
     }
     const siriUrl = conf && conf.url ? `${conf.url}/rest/v1/rpc/casa_siri` : 'https://<progetto>.supabase.co/rest/v1/rpc/casa_siri';
     const chiave = conf && conf.key ? conf.key : '<chiave pubblica>';
@@ -562,6 +611,7 @@
       <h3 id="sez-calendario">Calendario FamilyWall</h3>
       <p class="intro">In FamilyWall: Calendario › ingranaggio › il calendario del vostro cerchio › Genera URL iCal. Copiate il link qui. La GitHub Action lo legge ogni 15 minuti.</p>
       ${campo('s-ical', 'Link iCal', `<input id="s-ical" type="url" data-coll="ical_url" value="${esc(c.ical_url || '')}" placeholder="https://…" autocomplete="off">`)}
+      ${c.ical_url ? `<p class="auto-riga ${v.auto.calendario.ok ? 'ok' : 'warn'}"><span class="dot"></span><span>${esc(v.auto.calendario.testo)}</span></p>` : ''}
       ${campo('s-am', `Parole che indicano ${esc(v.nomi.M)}`, `<input id="s-am" data-dati="alias.M" data-lista="1" value="${esc((C.deepGet(v.cfg, 'alias.M') || []).join(', '))}" placeholder="${esc(v.nomi.M)}">`, 'Separate da virgola; se un evento le contiene nel titolo, nella descrizione o tra gli invitati, è suo.')}
       ${campo('s-ag', `Parole che indicano ${esc(v.nomi.G)}`, `<input id="s-ag" data-dati="alias.G" data-lista="1" value="${esc((C.deepGet(v.cfg, 'alias.G') || []).join(', '))}" placeholder="${esc(v.nomi.G)}">`)}
 
@@ -582,6 +632,10 @@
         <div class="kv"><code>p_testo</code><span>la variabile «Testo dettato»</span></div>
         <button type="button" class="btn sm" data-act="nuovo-token">Genera un codice nuovo</button> <small class="p-hint">Quello vecchio smette di funzionare.</small>`
         : `<p class="intro">Con un codice segreto i vostri iPhone aggiungono spesa, bigliettini e spese anche a voce, da ovunque.</p><button type="button" class="btn primary" data-act="nuovo-token">Genera il codice per Siri</button>`}
+
+      <h3 id="sez-automazioni">Automazioni su GitHub</h3>
+      <p class="intro">Calendario, brief e mercati arrivano da tre automazioni del repository Dashboard_Casa (scheda Actions). Qui vedete com’è andata l’ultima volta.</p>
+      <ul class="auto">${[['Calendario', v.auto.calendario], ['Brief', v.auto.brief], ['Cambio e Interroll', v.auto.mercati]].map(([n, r]) => `<li class="auto-riga ${r.ok ? 'ok' : 'warn'}"><span class="dot"></span><span><b>${n}</b> · ${esc(r.testo)}</span></li>`).join('')}</ul>
 
       <h3 id="sez-dispositivo">Questo dispositivo</h3>
       ${campo('s-vi', 'Vista', `<select id="s-vi" data-dev="vista">${[['auto', 'automatica'], ['tablet', 'tablet'], ['telefono', 'telefono']].map(([k, l]) => `<option value="${k}"${(ui.vistaPref || 'auto') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`)}

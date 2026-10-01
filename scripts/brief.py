@@ -13,12 +13,11 @@ import argparse
 import json
 import os
 import re
-import sys
 from datetime import date, datetime, timedelta
 
 import requests
 
-from comune import (Supabase, data_lunga, feriale, festivo, log, meteo, ora_locale,
+from comune import (Supabase, avviso, data_lunga, esegui, feriale, festivo, log, meteo, ora_locale,
                     partenza_consigliata, riassunto_meteo)
 
 MODELLO = os.environ.get("CLAUDE_MODEL") or "claude-sonnet-5-5"
@@ -132,11 +131,25 @@ def raccogli(db: Supabase, tipo: str, adesso: datetime) -> dict:
     }
 
 
-def brief_con_claude(ctx: dict, tipo: str) -> dict | None:
-    chiave = os.environ.get("ANTHROPIC_API_KEY", "")
+def _perche_claude_no(r) -> str:
+    testo = r.text[:400]
+    if r.status_code == 401:
+        return "la chiave di Claude non è valida (401): controllate il secret ANTHROPIC_API_KEY"
+    if r.status_code == 404 and "model" in testo:
+        return f"il modello {MODELLO} non esiste (404): controllate la variabile CLAUDE_MODEL"
+    if "credit balance" in testo:
+        return "il credito Anthropic è finito: ricaricatelo su console.anthropic.com"
+    if r.status_code in (429, 529) or r.status_code >= 500:
+        return f"Claude era occupato ({r.status_code}): riprova al prossimo brief"
+    return f"Claude ha risposto {r.status_code}: {testo[:160]}"
+
+
+def brief_con_claude(ctx: dict, tipo: str) -> tuple[dict | None, str | None]:
+    """Ritorna (brief, nota): la nota spiega perché si è usato il brief a regole."""
+    chiave = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not chiave:
         log("Nessuna ANTHROPIC_API_KEY: uso il brief a regole.")
-        return None
+        return None, "senza chiave di Claude: brief a regole"
     nomi = ctx.pop("_nomi")
     sistema = SISTEMA.format(M=nomi["M"], G=nomi["G"], quando="del mattino" if tipo == "mattina" else "della sera, pensato per domani")
     try:
@@ -146,8 +159,9 @@ def brief_con_claude(ctx: dict, tipo: str) -> dict | None:
                   "messages": [{"role": "user", "content": json.dumps(ctx, ensure_ascii=False, default=str)}]})
         ctx["_nomi"] = nomi
         if r.status_code >= 400:
+            nota = _perche_claude_no(r)
             log(f"Claude ha risposto {r.status_code}: {r.text[:300]}")
-            return None
+            return None, nota
         testo = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
         testo = re.sub(r"^```(?:json)?|```$", "", testo, flags=re.M).strip()
         out = json.loads(testo[testo.find("{"): testo.rfind("}") + 1])
@@ -155,12 +169,12 @@ def brief_con_claude(ctx: dict, tipo: str) -> dict | None:
                   "x": str(c.get("x", ""))[:24]} for c in (out.get("chips") or [])[:3] if c.get("x")]
         frase = str(out.get("testo", "")).strip()
         if not frase:
-            return None
-        return {"testo": frase[:420], "chips": chips, "modello": MODELLO}
+            return None, "Claude ha risposto senza testo"
+        return {"testo": frase[:420], "chips": chips, "modello": MODELLO}, None
     except Exception as e:  # noqa: BLE001
         ctx.setdefault("_nomi", nomi)
         log("Claude non disponibile:", e)
-        return None
+        return None, f"Claude non disponibile ({e.__class__.__name__})"
 
 
 def brief_a_regole(ctx: dict, tipo: str) -> dict:
@@ -208,13 +222,19 @@ def main() -> None:
             log(f"Il brief di {tipo} di oggi c'è già. Esco.")
             return
     ctx = raccogli(db, tipo, adesso)
-    brief = brief_con_claude(ctx, tipo) or brief_a_regole(ctx, tipo)
+    brief, nota = brief_con_claude(ctx, tipo)
+    if not brief:
+        brief = brief_a_regole(ctx, tipo)
+        if nota and os.environ.get("ANTHROPIC_API_KEY", "").strip():
+            avviso(f"Brief: {nota}")
     log(f"[{brief['modello']}] {brief['testo']}")
     log("chips:", json.dumps(brief["chips"], ensure_ascii=False))
     if not args.prova:
         db.inserisci("casa_brief", {"tipo": tipo, "testo": brief["testo"], "chips": brief["chips"], "modello": brief["modello"]})
         log("brief salvato")
+        db.segna_stato("brief", {"quando": ora_locale().isoformat(timespec="seconds"), "ok": True, "tipo": tipo,
+                                 "modello": brief["modello"], "nota": nota})
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    esegui(main)
