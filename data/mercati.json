@@ -1,6 +1,9 @@
 {
-  "aggiornato": null,
-  "eur_chf": null,
-  "eur_chf_var": null,
-  "interroll": { "prezzo": null, "var": null }
+  "aggiornato": "2026-10-01T14:07+02:00",
+  "eur_chf": 0.9478,
+  "eur_chf_var": 0.18,
+  "interroll": {
+    "prezzo": 1368.0,
+    "var": -1.72
+  }
 }
