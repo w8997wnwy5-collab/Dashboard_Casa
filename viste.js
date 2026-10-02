@@ -148,7 +148,7 @@
     if (!coll.ical_url) cal = riga('nolink', 'Manca il link iCal di FamilyWall (sezione Calendario).');
     else if (!qc) cal = riga('mai', 'Non è ancora arrivato. Lo copia ogni 15 minuti l’automazione «Calendario FamilyWall»: su GitHub aprite il repository › Actions › Calendario FamilyWall › Run workflow. Se in Actions non c’è, manca la cartella .github.');
     else if (sc.ok === false) cal = riga('errore', `Ultimo tentativo ${quandoTesto(qc, oggi)}: ${sc.errore || 'errore sconosciuto'}.`);
-    else if (ore(qc) > 2) cal = riga('fermo', `Fermo dall’ultima lettura (${quandoTesto(qc, oggi)}): controllate GitHub › Actions › Calendario FamilyWall.`);
+    else if (ore(qc) > 3) cal = riga('fermo', `Fermo dall’ultima lettura (${quandoTesto(qc, oggi)}): controllate GitHub › Actions › Calendario FamilyWall.`);
     else cal = riga('ok', `Letto ${quandoTesto(qc, oggi)}: ${sc.eventi === 1 ? '1 evento' : `${sc.eventi || 0} eventi`} nelle prossime tre settimane.`);
 
     const ub = (D.brief || [])[0], qb = data(ub && ub.creato_il), nota = auto.brief && auto.brief.nota;
