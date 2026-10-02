@@ -1,8 +1,10 @@
 """Dashboard Casa · scrive il brief del mattino (06:15) e della sera (18:00) con Claude.
 
 Raccoglie meteo, orario di uscita, calendario, faccende, spesa e conti; chiede a Claude tre
-frasi per lo schermo di casa e le salva nel database. Senza chiave Anthropic (o se Claude non
-risponde) scrive comunque un brief semplice a regole.
+frasi per lo schermo di casa e le salva nel database. Al mattino prepara anche la prima pagina:
+un titolo, una notizia per Ticino, Italia e mondo (RSI e ANSA), il santo e un fatto del giorno.
+Senza chiave Anthropic (o se Claude non risponde) scrive comunque un brief semplice a regole,
+con le notizie prese così come sono dai feed.
 
 Uso:  python scripts/brief.py                 (decide da solo mattina o sera in base all'ora)
       python scripts/brief.py --tipo mattina --forza --prova
@@ -17,6 +19,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
+import notizie as nt
 from comune import (Supabase, avviso, data_lunga, esegui, feriale, festivo, log, meteo, ora_locale,
                     partenza_consigliata, riassunto_meteo)
 
@@ -26,7 +29,7 @@ ICONE = {"umbrella", "car", "frost", "cal", "cart", "check", "spark", "wallet", 
 SISTEMA = """Sei l'assistente di casa di {M} e {G}, che vivono insieme a Lugano.
 Scrivi il brief {quando} che comparirà sullo schermo in cucina.
 Regole:
-- Al massimo 3 frasi brevi, al massimo 300 caratteri in tutto, in italiano naturale e caldo.
+- Al massimo 3 frasi brevi, al massimo 220 caratteri in tutto (lo schermo è piccolo), in italiano naturale e caldo.
 - Niente saluti generici, niente emoji, niente elenchi, niente punti esclamativi a raffica.
 - Prima le cose pratiche (meteo che cambia i piani, orario di uscita, impegni), poi al massimo una cosa di casa (faccende, spesa, conti, ricorrenze).
 - Usa solo i dati che ricevi: non inventare eventi, orari o numeri. Se un dato manca, non parlarne.
@@ -34,6 +37,23 @@ Regole:
 Rispondi solo con un oggetto JSON, senza altro testo:
 {{"testo": "...", "chips": [{{"t": "warn" | "ok" | "", "i": "umbrella|car|frost|cal|cart|check|spark|wallet|broom|heart", "x": "etichetta di massimo 22 caratteri"}}]}}
 con al massimo 3 chips: "warn" per un avviso (ombrello, brina), "ok" per un orario utile, "" per il resto."""
+
+SISTEMA_MATTINA = """Sei l'assistente di casa di {M} e {G}, che vivono insieme a Lugano (Ticino).
+Prepari la «prima pagina» del mattino che comparirà sullo schermo in cucina.
+Rispondi solo con un oggetto JSON, senza altro testo:
+{{"titolo": "...", "testo": "...", "chips": [{{"t": "warn" | "ok" | "", "i": "umbrella|car|frost|cal|cart|check|spark|wallet|broom|heart", "x": "..."}}],
+ "notizie": [{{"id": "T1", "titolo": "...", "riassunto": "..."}}],
+ "curiosita": {{"santo": "..." oppure null, "accadde": "..." oppure null}},
+ "idea": "..." oppure null}}
+Regole:
+- Italiano naturale e caldo. Niente emoji, niente elenchi, niente saluti generici, niente punti esclamativi a raffica.
+- titolo: il titolo della vostra giornata (meteo, impegni, casa), non delle notizie; al massimo 60 caratteri.
+- testo: al massimo 3 frasi brevi e 220 caratteri in tutto. Prima le cose pratiche (meteo che cambia i piani, orario di uscita, impegni), poi al massimo una cosa di casa. Usa solo i dati ricevuti: non inventare eventi, orari o numeri; se un dato manca, non parlarne. Orari nel formato 07:54. Chiama le persone per nome.
+- chips: al massimo 3, etichette di massimo 22 caratteri. "warn" per un avviso (ombrello, brina), "ok" per un orario utile, "" per il resto.
+- notizie: una per zona (Ticino, Italia, Mondo), scelta SOLO tra "notizie_disponibili" e indicata con il suo id. Preferisci quelle utili o importanti per chi vive a Lugano; evita cronaca nera e fatti macabri se c'è altro. "titolo": il titolo riscritto chiaro, al massimo 90 caratteri, senza aggiungere niente che non ci sia. "riassunto": una frase di al massimo 140 caratteri presa solo dal sommario; null se il sommario è vuoto. Se una zona non ha notizie, saltala.
+- curiosita.accadde: un fatto scelto tra "accadde_oggi" (curioso o positivo, se possibile), in italiano, che inizi con "Nel <anno>", al massimo 140 caratteri; null se la lista è vuota.
+- curiosita.santo: il santo del giorno del calendario italiano, per esempio "San Saba" o "Santa Bibiana", SOLO se compare tra "feste_del_giorno" (anche con il nome in inglese) e ne sei sicuro; altrimenti null.
+- idea: un piccolo suggerimento per la giornata o la serata insieme, legato al meteo o al calendario, al massimo 100 caratteri; oppure null."""
 
 
 def hm(dt: datetime) -> str:
@@ -145,17 +165,21 @@ def _perche_claude_no(r) -> str:
 
 
 def brief_con_claude(ctx: dict, tipo: str) -> tuple[dict | None, str | None]:
-    """Ritorna (brief, nota): la nota spiega perché si è usato il brief a regole."""
+    """Ritorna (brief, nota): la nota spiega perché si è usato il brief a regole.
+    Al mattino il brief contiene anche "_risposta", tutto il JSON di Claude per la prima pagina."""
     chiave = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not chiave:
         log("Nessuna ANTHROPIC_API_KEY: uso il brief a regole.")
         return None, "senza chiave di Claude: brief a regole"
     nomi = ctx.pop("_nomi")
-    sistema = SISTEMA.format(M=nomi["M"], G=nomi["G"], quando="del mattino" if tipo == "mattina" else "della sera, pensato per domani")
+    if tipo == "mattina":
+        sistema = SISTEMA_MATTINA.format(M=nomi["M"], G=nomi["G"])
+    else:
+        sistema = SISTEMA.format(M=nomi["M"], G=nomi["G"], quando="della sera, pensato per domani")
     try:
-        r = requests.post("https://api.anthropic.com/v1/messages", timeout=60, headers={
+        r = requests.post("https://api.anthropic.com/v1/messages", timeout=90, headers={
             "x-api-key": chiave, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": MODELLO, "max_tokens": 600, "system": sistema,
+            json={"model": MODELLO, "max_tokens": 1400 if tipo == "mattina" else 600, "system": sistema,
                   "messages": [{"role": "user", "content": json.dumps(ctx, ensure_ascii=False, default=str)}]})
         ctx["_nomi"] = nomi
         if r.status_code >= 400:
@@ -170,7 +194,7 @@ def brief_con_claude(ctx: dict, tipo: str) -> tuple[dict | None, str | None]:
         frase = str(out.get("testo", "")).strip()
         if not frase:
             return None, "Claude ha risposto senza testo"
-        return {"testo": frase[:420], "chips": chips, "modello": MODELLO}, None
+        return {"testo": frase[:420], "chips": chips, "modello": MODELLO, "_risposta": out}, None
     except Exception as e:  # noqa: BLE001
         ctx.setdefault("_nomi", nomi)
         log("Claude non disponibile:", e)
@@ -222,18 +246,46 @@ def main() -> None:
             log(f"Il brief di {tipo} di oggi c'è già. Esco.")
             return
     ctx = raccogli(db, tipo, adesso)
+    cand, cur = {}, {}
+    if tipo == "mattina":  # prima pagina: notizie dai feed e curiosità da Wikipedia (se non rispondono, si va avanti)
+        cand, cur = nt.notizie(adesso), nt.curiosita(adesso.date())
+        ctx["notizie_disponibili"] = nt.per_claude(cand)
+        ctx["accadde_oggi"] = cur.get("fatti", [])
+        ctx["feste_del_giorno"] = cur.get("feste", [])
     brief, nota = brief_con_claude(ctx, tipo)
     if not brief:
         brief = brief_a_regole(ctx, tipo)
         if nota and os.environ.get("ANTHROPIC_API_KEY", "").strip():
             avviso(f"Brief: {nota}")
+    riga = {"tipo": tipo, "testo": brief["testo"], "chips": brief["chips"], "modello": brief["modello"]}
+    if tipo == "mattina":
+        try:
+            riga["pagina"] = nt.pagina(brief.get("_risposta"), cand, cur)
+        except Exception as e:  # noqa: BLE001  una risposta strana di Claude non deve fermare il brief
+            log("prima pagina da Claude non valida, uso i feed così come sono:", e)
+            riga["pagina"] = nt.pagina(None, cand, cur)
     log(f"[{brief['modello']}] {brief['testo']}")
     log("chips:", json.dumps(brief["chips"], ensure_ascii=False))
+    if "pagina" in riga:
+        log("prima pagina:", json.dumps(riga["pagina"], ensure_ascii=False))
     if not args.prova:
-        db.inserisci("casa_brief", {"tipo": tipo, "testo": brief["testo"], "chips": brief["chips"], "modello": brief["modello"]})
+        salva(db, riga)
         log("brief salvato")
         db.segna_stato("brief", {"quando": ora_locale().isoformat(timespec="seconds"), "ok": True, "tipo": tipo,
-                                 "modello": brief["modello"], "nota": nota})
+                                 "modello": brief["modello"], "nota": nota,
+                                 "notizie": len(riga["pagina"]["notizie"]) if "pagina" in riga else None})
+
+
+def salva(db: Supabase, riga: dict) -> None:
+    """Salva il brief; se nel database manca ancora la colonna della prima pagina, salva il resto e lo dice."""
+    try:
+        db.inserisci("casa_brief", riga)
+    except RuntimeError as e:
+        if "pagina" not in riga or "pagina" not in str(e):
+            raise
+        avviso("Nel database manca la colonna «pagina»: in Supabase › SQL Editor lanciate supabase/aggiornamento-4.sql. "
+               "Il brief è salvato, ma senza notizie e curiosità.")
+        db.inserisci("casa_brief", {k: v for k, v in riga.items() if k != "pagina"})
 
 
 if __name__ == "__main__":
