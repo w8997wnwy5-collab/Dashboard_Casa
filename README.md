@@ -5,6 +5,11 @@ Meteo che serve, partenza per Interroll con il traffico, calendario di FamilyWal
 ogni mattina e ogni sera, lista della spesa con franchigia, faccende a punti, spese di casa con il saldo tra voi,
 cambio e titolo Interroll, ricorrenze e countdown. Si aggiunge tutto anche a voce, con Siri.
 
+Dalla versione 4: stile **smart home** (scuro, riquadri di vetro, le vostre foto come sfondo oppure i colori del
+momento della giornata), cielo animato col meteo vero, grafici (prossime ore, anelli, spese per categoria, cambio e
+Interroll degli ultimi 30 giorni) e, la mattina, la **prima pagina**: il brief come un giornale, con una notizia per
+Ticino, Italia e mondo, il santo e un fatto del giorno. Lo stile di prima («carta e luce») resta nelle impostazioni.
+
 - **App**: pagina statica su GitHub Pages (questo repository).
 - **Dati condivisi**: Supabase (piano gratuito), protetti da regole di accesso: li vedono solo i vostri tre account.
 - **Automazioni**: tre GitHub Action (calendario ogni 15 minuti, brief alle 06:10 e alle 17:55, mercati ogni ora nei giorni feriali).
@@ -90,24 +95,42 @@ Aprite la dashboard sul telefono, entrate con il vostro account e toccate l’in
 
 ---
 
+## Aggiornare alla versione 4
+
+1. **Supabase › SQL Editor › New query**: incollate tutto `supabase/aggiornamento-4.sql` e premete *Run*.
+   Aggiunge la colonna della prima pagina e la cartella privata per le foto. Si può rilanciare.
+2. **GitHub**: caricate i file nuovi ciascuno nella sua cartella (entrate nella cartella, poi *Add file › Upload files*).
+3. Sul tablet ricaricate la pagina. Dalla mattina dopo il brief delle 06:10 porta anche notizie e curiosità
+   (per provarlo subito: *Actions › Brief di casa › Run workflow*, tipo `mattina`).
+4. Le foto per lo sfondo si aggiungono dal telefono: scheda **Casa › Foto per lo schermo**. Vengono rimpicciolite
+   prima di partire e restano private (solo i vostri tre account le vedono).
+
+In *Impostazioni › Schermo* si sceglie lo stile, lo sfondo (foto o colori) e se mostrare la prima pagina al mattino.
+La prima pagina resta fino alle 09:30 nei giorni feriali e fino alle 11:00 nel weekend; il tasto **Dashboard** la
+chiude per 15 minuti, il tasto **Prima pagina** in basso la riapre.
+
 ## Come è fatta
 
 ```
-index.html            l’app: vista tablet (iPad) o telefono, scelta da sola
-config.js             URL e chiave pubblica di Supabase
-assets/casa.css       stile “Carta e luce” (chiaro di giorno, scuro col buio, quasi spento di notte)
-assets/js/base.js     date svizzere, festivi ticinesi, sole, icone, logica di casa
-assets/js/dati.js     archivio Supabase (tempo reale) e di esempio, meteo, traffico, mercati
-assets/js/viste.js    riquadri del tablet, schede del telefono, impostazioni
-assets/js/app.js      avvio e interazioni
-data/mercati.json     cambio e Interroll (scritto dalla GitHub Action, pubblico)
-supabase/schema.sql   tabelle, regole di accesso, funzione per Siri
-scripts/              calendario.py, brief.py, mercati.py
-.github/workflows/    le tre automazioni
+index.html               l’app: vista tablet (iPad) o telefono, scelta da sola
+config.js                URL e chiave pubblica di Supabase
+assets/casa.css          stili «smart home» e «carta e luce», cielo animato, grafici, prima pagina
+assets/js/base.js        date svizzere, festivi ticinesi, sole, icone, logica di casa
+assets/js/grafica.js     cielo animato, grafico delle prossime ore, anelli, ciambella, sparkline, linea del tempo
+assets/js/dati.js        archivio Supabase (tempo reale, foto) e di esempio, meteo, traffico, mercati
+assets/js/viste.js       riquadri del tablet, prima pagina, schede del telefono, impostazioni
+assets/js/app.js         avvio, interazioni, sfondo con le foto, caricamento delle foto
+data/mercati.json        cambio e Interroll con l’andamento (scritto dalla GitHub Action, pubblico)
+supabase/schema.sql      tabelle, regole di accesso, funzione per Siri, cartella delle foto
+supabase/aggiornamento-4.sql   solo le novità della versione 4, per chi ha già il database
+scripts/                 calendario.py, brief.py, notizie.py, mercati.py
+.github/workflows/       le tre automazioni
 ```
 
 Fonti dei dati: meteo da Open-Meteo con il modello di MeteoSvizzera (ICON-CH), traffico da TomTom,
-cambio dalla BCE via Frankfurter, Interroll da Yahoo Finance, calendario dal link iCal di FamilyWall.
+cambio dalla BCE via Frankfurter, Interroll da Yahoo Finance, calendario dal link iCal di FamilyWall,
+notizie dai feed pubblici di RSI (Ticino, mondo) e ANSA (Italia), curiosità da Wikipedia («accadde oggi» e feste del giorno).
+La prima pagina mostra solo titolo e una riga di riassunto; sul telefono la notizia si apre sul sito della fonte.
 
 ## Sicurezza
 
@@ -125,5 +148,7 @@ cambio dalla BCE via Frankfurter, Interroll da Yahoo Finance, calendario dal lin
 - **Errore rosso in Actions**: la riga *Dashboard Casa* in cima al riepilogo dice cosa sistemare (secret mancanti, chiave publishable al posto di quella secret, URL sbagliato).
 - **Traffico «da collegare»**: servono chiave TomTom e indirizzi con *Trova*.
 - **Brief «riassunto automatico»**: il workflow del brief non ha ancora girato oggi; la dashboard intanto ne scrive uno da sola.
+- **Prima pagina senza notizie**: nel registro di *Brief di casa* c’è una riga per fonte (`notizie Ticino: 6`…). Se una fonte non risponde la pagina esce senza quella zona; se nel riepilogo c’è l’avviso sulla colonna «pagina», va lanciato `supabase/aggiornamento-4.sql`.
+- **Foto «non ancora attive»**: manca `supabase/aggiornamento-4.sql`.
 - **Automazioni ferme**: GitHub spegne i workflow pianificati dopo 60 giorni senza attività nel repository. Il workflow *Mercati* fa un commit ogni ora nei giorni feriali proprio per evitarlo; se succede, riattivateli dalla scheda *Actions*.
 - **Supabase in pausa**: i progetti gratuiti si fermano dopo una settimana senza attività. La dashboard lo usa di continuo; se capita, *Restore* dal pannello di Supabase.
