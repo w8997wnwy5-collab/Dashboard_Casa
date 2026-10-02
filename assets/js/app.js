@@ -27,18 +27,22 @@
     const { vista, orologio } = opz;
     const A = opz.archivio, E = opz.esterni || { on: () => () => {} };
     const tablet = vista === 'tablet';
-    const ui = { tab: 'spesa', addOpen: false, sheet: false, sez: '', fresh: null, freshNome: '', wakeUntil: 0, err: {}, ok: {}, geo: {}, vistaPref: C.vistaPreferita(), pagato: null, divisione: 'meta', confermaSaldo: false, cancella: null, anteprima: !!opz.anteprima };
+    const ui = { tab: 'spesa', addOpen: false, sheet: false, sez: '', fresh: null, freshNome: '', wakeUntil: 0, dashboardFino: 0, err: {}, ok: {}, geo: {}, vistaPref: C.vistaPreferita(), pagato: null, divisione: 'meta', confermaSaldo: false, cancella: null, fotoVia: null, fotoCarico: '', anteprima: !!opz.anteprima };
     root.classList.add('casa', tablet ? 'v-tablet' : 'v-telefono');
     if (opz.pieno) root.classList.add('full');
-    root.innerHTML = tablet ? '<div class="stage"><div class="grid" data-mode="mattina"></div></div>' : '<div class="phone"><div class="p-body"></div></div>';
-    const stage = root.querySelector('.stage'), grid = root.querySelector('.grid'), phone = root.querySelector('.phone'), body = root.querySelector('.p-body');
+    const SFONDO = '<div class="bg" aria-hidden="true"><div class="bg-colori"><i class="b1"></i><i class="b2"></i><i class="b3"></i></div><div class="bg-foto a"></div><div class="bg-foto b"></div><div class="bg-velo"></div></div>';
+    // il campo per scegliere le foto sta fuori dalla parte che si ridisegna: se il telefono aggiorna la pagina
+    // mentre la galleria è aperta, la scelta arriva lo stesso
+    root.innerHTML = tablet ? `<div class="stage">${SFONDO}<div class="grid" data-mode="mattina"></div></div>`
+      : '<div class="phone"><div class="p-body"></div><input id="p-foto" class="sr" type="file" accept="image/*" multiple data-foto tabindex="-1" aria-hidden="true"></div>';
+    const stage = root.querySelector('.stage'), grid = root.querySelector('.grid'), phone = root.querySelector('.phone'), body = root.querySelector('.p-body'), bg = root.querySelector('.bg');
     const darkMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-    let lastMin = -1, lastSveglio = false, toastT = null, wakeLock = null;
+    let lastMin = -1, lastSveglio = false, lastDash = false, toastT = null, wakeLock = null;
 
     const inputAttivo = cont => { const a = document.activeElement; return a && cont && cont.contains(a) && a.matches('input, textarea, select') ? a : null; };
     const personaVoce = () => { const p = A.me && A.me.persona; return p === 'M' || p === 'G' ? p : (tablet ? 'T' : 'M'); };
     const via = () => (tablet ? 'tablet' : 'telefono');
-    const vmOra = () => C.vm(A, E, orologio, { sveglio: ui.wakeUntil > Date.now() });
+    const vmOra = () => C.vm(A, E, orologio, { sveglio: ui.wakeUntil > Date.now(), dashboard: ui.dashboardFino > Date.now() });
 
     function fit() {
       if (!tablet || opz.scala === false) return;
@@ -62,32 +66,75 @@
       if (focusId) { const f = document.getElementById(focusId); if (f) f.focus({ preventScroll: true }); }
     }
 
+    /* tablet: si ridisegnano solo i riquadri cambiati, così il cielo animato non riparte ogni minuto */
+    let firme = [];
+    const firma = h => h.replace(/animation-delay:-?[\d.]+s/g, '');
+    function disegnaTablet(v) {
+      const pezzi = C.tabletPezzi(v, ui), nuove = pezzi.map(firma);
+      if (grid.dataset.mode !== v.mode || grid.children.length !== pezzi.length) {
+        grid.dataset.mode = v.mode; grid.innerHTML = pezzi.join(''); firme = nuove; return;
+      }
+      pezzi.forEach((h, i) => {
+        if (nuove[i] === firme[i]) return;
+        const t = document.createElement('template'); t.innerHTML = h.trim();
+        const el = t.content.firstElementChild;
+        if (el && grid.children[i]) grid.children[i].replaceWith(el);
+      });
+      firme = nuove;
+    }
+
+    /* sfondo dello stile smart home: le vostre foto (una ogni 10 minuti) oppure i colori del momento */
+    let fotoOra = '', fotoLato = 'a';
+    function aggiornaSfondo(v) {
+      if (!bg) return;
+      root.dataset.stile = v.stile;
+      bg.dataset.momento = v.momento; bg.dataset.stagione = v.stagione;
+      bg.dataset.spento = v.mode === 'notte' ? '1' : '';
+      const lista = v.stile === 'smart' && v.sfondo !== 'colori' ? (v.foto || []).filter(f => f && f.url) : [];
+      if (!lista.length) { bg.dataset.foto = ''; fotoOra = ''; return; }
+      const url = lista[Math.floor(Date.now() / 600e3) % lista.length].url;
+      if (url === fotoOra) return;
+      fotoOra = url;
+      const img = new Image();
+      img.onload = () => {
+        if (fotoOra !== url) return;
+        const nuovo = fotoLato === 'a' ? 'b' : 'a';
+        const el = bg.querySelector('.bg-foto.' + nuovo), vecchio = bg.querySelector('.bg-foto.' + fotoLato);
+        el.style.backgroundImage = `url("${url.replace(/["\\]/g, encodeURIComponent)}")`;
+        el.classList.add('on'); vecchio.classList.remove('on'); fotoLato = nuovo; bg.dataset.foto = '1';
+      };
+      img.onerror = () => { if (fotoOra === url) fotoOra = ''; };
+      img.src = url;
+    }
+
     function render(forza) {
       if (A.stato !== 'pronto') {
         const sig = [A.stato, A.errore || '', (A.me && A.me.id) || ''].join('|');
         if (!forza && sig === ui.gateSig) return;
         ui.gateSig = sig;
         root.dataset.look = darkMq && darkMq.matches ? 'sera' : 'giorno';
+        delete root.dataset.stile;
         const html = C.schermataStato(A, ui);
-        if (tablet) { grid.dataset.mode = 'gate'; grid.innerHTML = html; } else body.innerHTML = html;
+        if (tablet) { grid.dataset.mode = 'gate'; grid.innerHTML = html; firme = []; } else body.innerHTML = html;
         return;
       }
       ui.gateSig = '';
       const v = vmOra();
-      lastMin = v.min; lastSveglio = v.sveglio;
+      lastMin = v.min; lastSveglio = v.sveglio; lastDash = ui.dashboardFino > Date.now();
       if (ui.freshNome) {
         const f = v.aperte.find(i => String(i.nome).toLowerCase() === ui.freshNome);
         if (f) { ui.fresh = f.id; ui.freshNome = ''; setTimeout(() => { if (ui.fresh === f.id) ui.fresh = null; }, 2600); }
       }
       if (tablet) {
         root.dataset.look = v.look;
+        aggiornaSfondo(v);
         const a = inputAttivo(grid);
         if (a && !forza) grid.querySelectorAll('[data-clock]').forEach(el => { el.textContent = C.hm(v.min); });
         else {
           const focusId = a ? a.id : '';
-          grid.dataset.mode = v.mode; grid.innerHTML = C.tablet(v, ui);
+          disegnaTablet(v);
           const f = (ui.addOpen && grid.querySelector('#t-voce')) || (focusId && document.getElementById(focusId));
-          if (f) f.focus({ preventScroll: true });
+          if (f && document.activeElement !== f) f.focus({ preventScroll: true });
         }
         renderSheet(stage, v, forza);
       } else {
@@ -128,6 +175,37 @@
       }
       render(true);
     }
+    function rimpicciolisci(file, lato = 2048, qualita = 0.82) {
+      return new Promise((ok, no) => {
+        const url = URL.createObjectURL(file), img = new Image();
+        img.onload = () => {
+          const k = Math.min(1, lato / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+          const c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          URL.revokeObjectURL(url);
+          c.toBlob(b => (b ? ok(b) : no(new Error('foto'))), 'image/jpeg', qualita);
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); no(new Error('foto')); };
+        img.src = url;
+      });
+    }
+    async function caricaFoto(files) {
+      const lista = files.filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name || ''));
+      if (!lista.length) { toast('Scegliete delle foto'); return; }
+      if (!A.caricaFoto) { toast('Qui non si possono caricare foto'); return; }
+      let fatte = 0, errore = '';
+      ui.ok.foto = '';
+      for (const f of lista.slice(0, 20)) {
+        ui.fotoCarico = lista.length > 1 ? `Carico ${fatte + 1} di ${Math.min(20, lista.length)}…` : 'Carico…'; render(true);
+        try { const e = await A.caricaFoto(await rimpicciolisci(f)); if (e) { errore = e; break; } fatte++; }
+        catch (e) { errore = 'Questa foto non si riesce a leggere: provate con un’altra.'; break; }
+      }
+      ui.fotoCarico = '';
+      if (fatte) ui.ok.foto = fatte === 1 ? 'Foto aggiunta: tra poco è sul tablet.' : `${fatte} foto aggiunte: tra poco sono sul tablet.`;
+      if (errore) toast(errore);
+      render(true);
+    }
     function scegli(el) { el.parentElement.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === el))); }
 
     /* ---------- clic ---------- */
@@ -138,7 +216,7 @@
       switch (act) {
         case 'voce': await A.segnaVoce(id); break;
         case 'aggiungi': ui.addOpen = !ui.addOpen; render(true); break;
-        case 'fatto': el.disabled = true; { const e = await A.faccendaFatta(id, el.dataset.chi || personaVoce()); if (e) toast(e); } break;
+        case 'fatto': el.disabled = true; { const e = await A.faccendaFatta(id, el.dataset.chi || personaVoce()); if (e) toast(e); el.disabled = false; } break;
         case 'annulla': await A.annullaFatta(id); break;
         case 'letto': await A.leggiNota(id); break;
         case 'impostazioni': ui.sheet = true; ui.sez = el.dataset.sez || ''; render(true); break;
@@ -146,6 +224,10 @@
         case 'sfondo': if (ev.target === el) { ui.sheet = false; render(true); } break;
         case 'vai': ui.sez = el.dataset.sez; render(true); break;
         case 'sveglia': ui.wakeUntil = Date.now() + 30000; render(true); break;
+        case 'dashboard': ui.dashboardFino = Date.now() + 15 * 60e3; render(true); break;
+        case 'prima': ui.dashboardFino = 0; render(true); break;
+        case 'foto-via': ui.fotoVia = id; render(true); break;
+        case 'foto-via-ok': ui.fotoVia = null; { const e = A.togliFoto ? await A.togliFoto(id) : 'Non disponibile'; toast(e || 'Foto tolta'); } render(true); break;
         case 'scheda': ui.tab = el.dataset.k; ui.err = {}; ui.ok = {}; ui.confermaSaldo = false; ui.cancella = null; render(true); break;
         case 'pagato': ui.pagato = el.dataset.w; scegli(el); break;
         case 'divisione': ui.divisione = el.dataset.k; scegli(el); break;
@@ -255,6 +337,10 @@
       } else if (t.dataset.coll) {
         const e = await A.salvaCollegamento(t.dataset.coll, t.value.trim());
         toast(e || 'Salvato');
+      } else if (t.matches('input[data-foto]')) {
+        const files = Array.from(t.files || []);
+        t.value = '';
+        await caricaFoto(files);
       } else if (t.dataset.dev === 'vista') {
         if (opz.anteprima) { toast('Nell’anteprima non serve'); return; }
         try { localStorage.setItem(VISTA_KEY, t.value); } catch (e) { }
@@ -271,27 +357,14 @@
       if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches && ev.target.matches('.night')) { ev.preventDefault(); ui.wakeUntil = Date.now() + 30000; render(true); }
     });
 
-    /* ---------- suggerimento sulle barre della pioggia ---------- */
-    const mostraTip = g => {
-      const wrap = g.closest('[data-chart]'); if (!wrap) return;
-      wrap.querySelectorAll('.tip').forEach(t => t.remove());
-      const r = g.querySelector('path').getBoundingClientRect(), w = wrap.getBoundingClientRect(), k = (w.width / wrap.offsetWidth) || 1;
-      const tip = document.createElement('div'); tip.className = 'tip'; tip.textContent = g.dataset.tip;
-      tip.style.left = ((r.left + r.width / 2 - w.left) / k) + 'px'; tip.style.top = ((r.top - w.top) / k - 6) + 'px';
-      wrap.appendChild(tip);
-    };
-    root.addEventListener('pointerover', ev => { const g = ev.target.closest && ev.target.closest('.rain .rbar'); if (g) mostraTip(g); });
-    root.addEventListener('pointerdown', ev => { const g = ev.target.closest && ev.target.closest('.rain .rbar'); if (g) mostraTip(g); });
-    root.addEventListener('pointerout', ev => { const g = ev.target.closest && ev.target.closest('.rain .rbar'); if (g && !g.contains(ev.relatedTarget)) { const w = g.closest('[data-chart]'); if (w) w.querySelectorAll('.tip').forEach(t => t.remove()); } });
-
     /* ---------- tempo che passa, dati che arrivano ---------- */
     A.on(() => render());
     E.on(() => render());
     if (darkMq && darkMq.addEventListener) darkMq.addEventListener('change', () => render());
     const timer = setInterval(() => {
       if (A.stato !== 'pronto') return;
-      const m = C.zParts(orologio.now()).min, sv = ui.wakeUntil > Date.now();
-      if (m !== lastMin || sv !== lastSveglio) render();
+      const m = C.zParts(orologio.now()).min, sv = ui.wakeUntil > Date.now(), dash = ui.dashboardFino > Date.now();
+      if (m !== lastMin || sv !== lastSveglio || dash !== lastDash) render();
     }, 1000);
     window.addEventListener('resize', fit);
     if ('ResizeObserver' in window) new ResizeObserver(fit).observe(root);

@@ -6,7 +6,7 @@
     const fns = new Set();
     return { on: f => { fns.add(f); return () => fns.delete(f); }, emit: () => fns.forEach(f => { try { f(); } catch (e) { console.error(e); } }) };
   };
-  const vuoti = () => ({ config: { dati: {}, collegamenti: {} }, spesa: [], note: [], faccende: [], fatte: [], spese: [], riepilogo: null, ricorrenze: [], eventi: [], brief: [] });
+  const vuoti = () => ({ config: { dati: {}, collegamenti: {} }, spesa: [], note: [], faccende: [], fatte: [], spese: [], riepilogo: null, ricorrenze: [], eventi: [], brief: [], foto: [] });
 
   /* =====================================================================
      Configurazione del collegamento (config.js oppure inserita nell'app)
@@ -65,8 +65,30 @@
         const { data, error } = await sb.from('casa_eventi').select('*').gte('fine', da).lt('inizio', a).order('inizio').limit(400);
         if (error) throw error; S.data.eventi = data || [];
       },
-      async brief() { const { data, error } = await sb.from('casa_brief').select('*').order('creato_il', { ascending: false }).limit(6); if (error) throw error; S.data.brief = data || []; }
+      async brief() { const { data, error } = await sb.from('casa_brief').select('*').order('creato_il', { ascending: false }).limit(6); if (error) throw error; S.data.brief = data || []; },
+      /* foto per lo sfondo: bucket privato «foto», cartella casa/. Non blocca mai il resto se manca. */
+      async foto() {
+        try {
+          const { data, error } = await sb.storage.from('foto').list('casa', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+          if (error) throw error;
+          const paths = (data || []).filter(f => f && f.id && f.name && !f.name.startsWith('.')).map(f => 'casa/' + f.name);
+          const ora = Date.now(), daFirmare = paths.filter(x => !firmate[x] || ora - firmate[x].quando > 12 * 3600e3);
+          if (daFirmare.length) {
+            const r = await sb.storage.from('foto').createSignedUrls(daFirmare, 24 * 3600);
+            if (r.error) throw r.error;
+            (r.data || []).forEach(x => { if (x && x.signedUrl && x.path) firmate[x.path] = { url: x.signedUrl, quando: ora }; });
+          }
+          S.data.foto = paths.filter(x => firmate[x]).map(x => ({ path: x, url: firmate[x].url }));
+          S.fotoErr = '';
+        } catch (e) {
+          S.data.foto = [];
+          const m = String((e && (e.message || e.error)) || e || '');
+          S.fotoErr = /not.?found|does not exist|bucket/i.test(m) ? 'Le foto non sono ancora attive: in Supabase › SQL Editor lanciate il file aggiornamento-4.sql.' : `Foto non disponibili: ${m || 'errore sconosciuto'}.`;
+        }
+      }
     };
+    const firmate = {};
+    S.fotoErr = '';
     const TAB = { casa_config: 'config', casa_spesa: 'spesa', casa_bigliettini: 'note', casa_faccende: 'faccende', casa_faccende_fatte: 'fatte', casa_spese: 'spese', casa_ricorrenze: 'ricorrenze', casa_eventi: 'eventi', casa_brief: 'brief' };
     const pending = {};
     const ricarica = nome => {
@@ -126,6 +148,18 @@
     S.togliSpesa = id => run('Non riesco a cancellare', () => sb.from('casa_spese').delete().eq('id', id), ['spese']);
     S.salvaRicorrenza = r => run('Non riesco a salvare', () => sb.from('casa_ricorrenze').insert(r), ['ricorrenze']);
     S.togliRicorrenza = id => run('Non riesco a cancellare', () => sb.from('casa_ricorrenze').delete().eq('id', id), ['ricorrenze']);
+    S.caricaFoto = async blob => {
+      const nome = `casa/${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 7)}.jpg`;
+      try {
+        const { error } = await sb.storage.from('foto').upload(nome, blob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
+        if (error) throw error;
+        await load.foto(); ev.emit(); return '';
+      } catch (e) { const m = String((e && e.message) || ''); return /bucket|not.?found/i.test(m) ? 'Prima va lanciato aggiornamento-4.sql in Supabase.' : err(e, 'Non riesco a caricare la foto'); }
+    };
+    S.togliFoto = async path => {
+      try { const { error } = await sb.storage.from('foto').remove([path]); if (error) throw error; delete firmate[path]; await load.foto(); ev.emit(); return ''; }
+      catch (e) { return err(e, 'Non riesco a togliere la foto'); }
+    };
     S.salvaDati = (path, val) => {
       const dati = C.deepSet(C.clone(S.data.config.dati || {}), path, val);
       S.data.config.dati = dati; ev.emit();
@@ -142,7 +176,7 @@
   /* =====================================================================
      Archivio di esempio (per provare l'app senza database)
      ===================================================================== */
-  const DEMO_KEY = 'casa-esempio-v2';
+  const DEMO_KEY = 'casa-esempio-v4';
   const iso = (d, t) => `${d}T${t}:00+01:00`;
   const DEMO = () => ({
     config: {
@@ -190,7 +224,10 @@
     spese: [
       { id: 'x1', data: '2026-12-02', descrizione: 'Migros', importo: 23.4, pagato_da: 'G', quota_m: 50, categoria: 'Spesa', tipo: 'spesa', via: 'Siri', creato_il: iso('2026-12-02', '07:40') },
       { id: 'x2', data: '2026-12-01', descrizione: 'Coop', importo: 38.6, pagato_da: 'G', quota_m: 50, categoria: 'Spesa', tipo: 'spesa', via: 'telefono', creato_il: iso('2026-12-01', '18:20') },
-      { id: 'x3', data: '2026-12-01', descrizione: 'Swisscom internet', importo: 49.9, pagato_da: 'M', quota_m: 50, categoria: 'Bollette', tipo: 'spesa', via: 'telefono', creato_il: iso('2026-12-01', '09:00') }
+      { id: 'x3', data: '2026-12-01', descrizione: 'Swisscom internet', importo: 49.9, pagato_da: 'M', quota_m: 50, categoria: 'Bollette', tipo: 'spesa', via: 'telefono', creato_il: iso('2026-12-01', '09:00') },
+      { id: 'x4', data: '2026-12-01', descrizione: 'Affitto di dicembre', importo: 1850, pagato_da: 'M', quota_m: 50, categoria: 'Affitto', tipo: 'spesa', via: 'telefono', creato_il: iso('2026-12-01', '08:30') },
+      { id: 'x5', data: '2026-12-01', descrizione: 'IKEA: lampada e tende', importo: 129.8, pagato_da: 'G', quota_m: 50, categoria: 'Casa', tipo: 'spesa', via: 'telefono', creato_il: iso('2026-12-01', '16:10') },
+      { id: 'x6', data: '2026-12-01', descrizione: 'Pizza del trasloco', importo: 46, pagato_da: 'G', quota_m: 50, categoria: 'Svago', tipo: 'spesa', via: 'Siri', creato_il: iso('2026-12-01', '21:00') }
     ],
     riepilogo: null,
     ricorrenze: [
@@ -208,11 +245,70 @@
       { uid: 'e8', inizio: iso('2026-12-07', '19:30'), fine: iso('2026-12-07', '21:00'), titolo: 'Calcetto', chi: 'M' }
     ],
     brief: [
-      { id: 3, tipo: 'mattina', testo: 'Buon sabato! Cielo sereno e 10° nel pomeriggio, perfetto per Natale in Piazza alle 16. Per l’Esselunga avete 9 cose in lista e 0.8 kg di carne: siete dentro la franchigia.', chips: [{ t: 'ok', i: 'check', x: 'Franchigia ok' }], creato_il: iso('2026-12-05', '08:30'), modello: 'esempio' },
+      { id: 3, tipo: 'mattina', testo: 'Buon sabato! Cielo sereno e 10° nel pomeriggio, perfetto per Natale in Piazza alle 16. Per l’Esselunga avete 9 cose in lista e 0.8 kg di carne: siete dentro la franchigia.', chips: [{ t: 'ok', i: 'check', x: 'Franchigia ok' }], creato_il: iso('2026-12-05', '08:30'), modello: 'esempio',
+        pagina: {
+          titolo: 'Sole pieno per Natale in Piazza',
+          notizie: [
+            { zona: 'Ticino', titolo: 'Esempio: casette di Natale aperte fino alle 22 in centro', riassunto: 'Testo di prova: qui comparirà la prima notizia ticinese della RSI.', fonte: 'esempio' },
+            { zona: 'Italia', titolo: 'Esempio: neve in arrivo sulle Alpi nel fine settimana', riassunto: 'Testo di prova: qui comparirà la notizia italiana principale dell’ANSA.', fonte: 'esempio' },
+            { zona: 'Mondo', titolo: 'Esempio: vertice internazionale sul clima chiuso con un accordo', riassunto: 'Testo di prova: qui comparirà la notizia dal mondo della RSI.', fonte: 'esempio' }
+          ],
+          curiosita: { santo: 'San Saba', accadde: 'Nel 1791 muore a Vienna Wolfgang Amadeus Mozart, a 35 anni.' },
+          idea: 'Dopo il mercatino, cioccolata calda in Piazza Riforma.'
+        } },
       { id: 2, tipo: 'sera', testo: 'Domani sole ma 0° all’alba: brina sul parabrezza, uscite entro le 07:49. In serata: cena da Luca e Sara alle 18:45.', chips: [{ t: 'warn', i: 'frost', x: 'Brina: +5 min' }, { t: 'ok', i: 'car', x: 'Domani entro 07:49' }], creato_il: iso('2026-12-02', '18:00'), modello: 'esempio' },
-      { id: 1, tipo: 'mattina', testo: 'Asciutto fino alle 15, poi pioggia: portate l’ombrello. Sull’A2 c’è un po’ di coda, uscite entro le 07:54. Stasera Gaia ha pilates alle 19: l’aspirapolvere tocca a Matteo.', chips: [{ t: 'warn', i: 'umbrella', x: 'Ombrello' }, { t: 'ok', i: 'car', x: 'Esci entro 07:54' }, { t: '', i: 'cal', x: '3 impegni oggi' }], creato_il: iso('2026-12-02', '06:15'), modello: 'esempio' }
+      { id: 1, tipo: 'mattina', testo: 'Asciutto fino alle 15, poi pioggia: portate l’ombrello. Sull’A2 c’è un po’ di coda, uscite entro le 07:54. Stasera Gaia ha pilates alle 19: l’aspirapolvere tocca a Matteo.', chips: [{ t: 'warn', i: 'umbrella', x: 'Ombrello' }, { t: 'ok', i: 'car', x: 'Esci entro 07:54' }, { t: '', i: 'cal', x: '3 impegni oggi' }], creato_il: iso('2026-12-02', '06:15'), modello: 'esempio',
+        pagina: {
+          titolo: 'Ombrello dalle 15, un po’ di coda sull’A2',
+          notizie: [
+            { zona: 'Ticino', titolo: 'Esempio: nuove corse serali dei bus tra Lugano e il Vedeggio', riassunto: 'Testo di prova: qui comparirà la prima notizia ticinese della RSI.', fonte: 'esempio' },
+            { zona: 'Italia', titolo: 'Esempio: treni regionali, da domenica cambia l’orario invernale', riassunto: 'Testo di prova: qui comparirà la notizia italiana principale dell’ANSA.', fonte: 'esempio' },
+            { zona: 'Mondo', titolo: 'Esempio: una missione spaziale fotografa da vicino una cometa', riassunto: 'Testo di prova: qui comparirà la notizia dal mondo della RSI.', fonte: 'esempio' }
+          ],
+          curiosita: { santo: 'Santa Bibiana', accadde: 'Nel 1804 Napoleone Bonaparte si incorona imperatore dei francesi a Notre-Dame.' },
+          idea: 'Serata di pioggia: tisana e la serie che avete lasciato a metà.'
+        } }
     ]
   });
+
+  /* foto di esempio: due illustrazioni del lago disegnate al volo (nell'esempio non ci sono foto vere) */
+  const disegnaLago = sera => {
+    try {
+      const W = 1600, H = 1200, c = document.createElement('canvas'); c.width = W; c.height = H;
+      const g = c.getContext('2d'), r = C.G.rnd(sera ? 5 : 3), oriz = H * 0.6;
+      const sfuma = (y0, y1, stop) => { const x = g.createLinearGradient(0, y0, 0, y1); stop.forEach(([k, col]) => x.addColorStop(k, col)); return x; };
+      g.fillStyle = sfuma(0, oriz, sera ? [[0, '#1E2350'], [0.45, '#7A3E6E'], [0.8, '#E07A55'], [1, '#F6B26B']] : [[0, '#2F6FB5'], [0.6, '#86B9E3'], [1, '#E9DDC9']]);
+      g.fillRect(0, 0, W, oriz);
+      const sx = sera ? W * 0.66 : W * 0.28, sy = sera ? oriz - 46 : H * 0.17, alone = g.createRadialGradient(sx, sy, 0, sx, sy, sera ? 300 : 230);
+      alone.addColorStop(0, sera ? 'rgba(255,220,160,.95)' : 'rgba(255,252,232,.95)');
+      alone.addColorStop(0.1, sera ? 'rgba(255,190,120,.7)' : 'rgba(255,246,214,.55)');
+      alone.addColorStop(1, 'rgba(255,200,140,0)');
+      g.fillStyle = alone; g.fillRect(0, 0, W, oriz);
+      const monti = (base, picchi, col) => {
+        g.beginPath(); g.moveTo(0, oriz);
+        for (let x = 0; x <= W; x += 8) {
+          let y = base + Math.sin(x / 37) * 4 + Math.sin(x / 11) * 2;
+          picchi.forEach(([px, ph, pw]) => { y -= ph * Math.exp(-((x - px) ** 2) / (2 * pw * pw)); });
+          g.lineTo(x, y);
+        }
+        g.lineTo(W, oriz); g.closePath(); g.fillStyle = col; g.fill();
+      };
+      monti(oriz - 60, [[W * 0.1, 160, 140], [W * 0.5, 120, 200], [W * 0.86, 190, 160]], sera ? '#6A4A78' : '#9DB6CF');
+      monti(oriz - 18, [[W * 0.34, 330, 105], [W * 0.78, 215, 190], [W * 0.02, 140, 160]], sera ? '#3E2E55' : '#5F7F98');
+      monti(oriz, [[W * 0.96, 165, 220], [W * 0.14, 90, 260]], sera ? '#24203A' : '#3D5568');
+      g.fillStyle = sfuma(oriz, H, sera ? [[0, '#B8607A'], [0.25, '#4A3560'], [1, '#141428']] : [[0, '#86AFD3'], [0.3, '#3F6F96'], [1, '#183049']]);
+      g.fillRect(0, oriz, W, H - oriz);
+      for (let i = 0; i < 160; i++) {
+        const y = oriz + 6 + Math.pow(r(), 1.6) * (H - oriz), w = 16 + r() * 130 * (1 - (y - oriz) / H);
+        const x = sx + (r() - 0.5) * (90 + (y - oriz) * 0.9);
+        g.fillStyle = sera ? `rgba(255,190,130,${(0.12 + r() * 0.35).toFixed(2)})` : `rgba(255,255,255,${(0.08 + r() * 0.25).toFixed(2)})`;
+        g.fillRect(x - w / 2, y, w, 1.6 + r() * 1.6);
+      }
+      if (sera) for (let i = 0; i < 110; i++) { g.fillStyle = `rgba(255,${Math.round(200 + r() * 40)},140,${(0.5 + r() * 0.5).toFixed(2)})`; g.fillRect(W * 0.16 + r() * W * 0.56, oriz - 5 - Math.pow(r(), 2) * 26, 2.4, 2.4); }
+      return c.toDataURL('image/jpeg', 0.86);
+    } catch (e) { return ''; }
+  };
+  const fotoEsempio = () => [disegnaLago(false), disegnaLago(true)].map((url, i) => ({ path: `esempio/lago-${i ? 'sera' : 'giorno'}.jpg`, url })).filter(f => f.url);
 
   C.creaArchivioEsempio = (opzioni = {}) => {
     const ev = emitter();
@@ -221,14 +317,18 @@
       try { const raw = localStorage.getItem(DEMO_KEY); if (raw) { const o = JSON.parse(raw); if (o && o.spesa && o.config) data = o; } } catch (e) { }
     }
     const S = { tipo: 'esempio', stato: 'pronto', errore: '', me: { id: 'esempio', email: 'esempio', persona: opzioni.persona || 'T' }, data, on: ev.on };
-    const salva = () => { if (opzioni.ricorda === false) return; try { localStorage.setItem(DEMO_KEY, JSON.stringify(S.data)); } catch (e) { } };
+    if (!S.data.foto || !S.data.foto.length) S.data.foto = opzioni.fotoEsempio === false ? [] : fotoEsempio();
+    S.fotoErr = '';
+    const salva = () => { if (opzioni.ricorda === false) return; try { localStorage.setItem(DEMO_KEY, JSON.stringify({ ...S.data, foto: [] })); } catch (e) { } };
     const cambia = () => { salva(); ev.emit(); return Promise.resolve(''); };
     const id = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const ora = () => (opzioni.orologio ? opzioni.orologio.now() : new Date()).toISOString();
     S.avvia = () => { ev.emit(); return Promise.resolve(); };
     S.accedi = () => Promise.resolve('');
     S.esci = () => Promise.resolve();
-    S.ripristina = () => { S.data = DEMO(); cambia(); };
+    S.ripristina = () => { const foto = S.data.foto || []; S.data = DEMO(); S.data.foto = foto; cambia(); };
+    S.caricaFoto = blob => { S.data.foto.unshift({ path: id('esempio/'), url: URL.createObjectURL(blob) }); return cambia(); };
+    S.togliFoto = path => { S.data.foto = S.data.foto.filter(f => f.path !== path); return cambia(); };
     S.aggiungiVoce = (nome, chi, via) => { const n = String(nome).trim().replace(/\s+/g, ' '); S.data.spesa.unshift({ id: id('s'), nome: C.cap(n), chi, via, carne_kg: C.carneKg(n), creato_il: ora(), preso_il: null }); return cambia(); };
     S.segnaVoce = vid => { const it = S.data.spesa.find(x => x.id === vid); if (it) it.preso_il = it.preso_il ? null : ora(); return cambia(); };
     S.aggiungiNota = (testo, chi, via) => { S.data.note.unshift({ id: id('n'), chi, testo, via, creato_il: ora(), letto_il: null }); return cambia(); };
@@ -343,6 +443,17 @@
     '2026-12-06': { t: [1,1,1,0,0,0,0,0,1,3,5,7,8,9,9,8,6,5,4,4,3,3,2,2], p: [5,5,5,5,5,5,5,10,10,10,15,15,20,20,20,15,10,10,10,10,10,10,10,10], c: [1,1,1,1,1,2,2,2,2,2,2,2,3,3,2,2,2,1,1,1,1,1,1,1] },
     '2026-12-07': { t: [2,2,2,1,1,1,1,1,2,4,6,7,8,8,8,7,6,5,4,4,3,3,3,2], p: [10,10,10,10,10,10,15,15,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20], c: [3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3] }
   };
+  const SERIE_ESEMPIO = (() => {
+    const r = C.G ? C.G.rnd(7) : Math.random, eur = [], ir = [];
+    let a = 0.9445, b = 2088;
+    for (let i = 29; i >= 0; i--) {
+      a += (r() - 0.53) * 0.0018; b += (r() - 0.45) * 22;
+      const g = C.key(C.addDays(C.ymd(2026, 12, 2), -i));
+      eur.push([g, Math.round(a * 10000) / 10000]); ir.push([g, Math.round(b)]);
+    }
+    eur[eur.length - 1][1] = 0.936; ir[ir.length - 1][1] = 2154;
+    return { eur_chf: eur, interroll: ir };
+  })();
   C.creaEsterniEsempio = orologio => {
     const ev = emitter();
     const tr = min => {
@@ -356,7 +467,7 @@
       get meteo() { return { giorni: WX, aggiornato: orologio.now() }; },
       get traffico() { const z = C.zParts(orologio.now()); return { ...tr(z.min), alle: orologio.now() }; },
       get domani() { const z = C.zParts(orologio.now()); let d = C.addDays(z.o, 1); for (let i = 0; i < 7 && !C.feriale(d); i++) d = C.addDays(d, 1); return { min: 31, ritardo: 6, libero: 25, giorno: C.key(d) }; },
-      mercati: { aggiornato: '2026-12-02T07:30:00+01:00', eur_chf: 0.936, eur_chf_var: -0.1, interroll: { prezzo: 2154, var: 0.8 } },
+      mercati: { aggiornato: '2026-12-02T07:30:00+01:00', eur_chf: 0.936, eur_chf_var: -0.1, interroll: { prezzo: 2154, var: 0.8 }, serie: SERIE_ESEMPIO },
       geocodifica: async q => ({ lat: 46.004, lon: 8.978, trovato: q + ' (esempio)' }),
       aggiorna: async () => { ev.emit(); }
     };
